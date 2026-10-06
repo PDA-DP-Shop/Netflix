@@ -1,0 +1,54 @@
+import React,{useEffect,useMemo,useState} from 'react';
+import {createRoot} from 'react-dom/client';
+import {QRCodeSVG} from 'qrcode.react';
+import {ref,onValue,push,set,update,remove} from 'firebase/database';
+import {db} from './firebase';
+import './style.css';
+
+const ADMIN_USER='NetflixSVR2';
+const ADMIN_PASS='NetflixSVR2';
+const DEFAULT_PLANS=[
+ {id:'mobile',name:'Mobile',price:149,quality:'480p',devices:1,simultaneous:1,download:1,note:'Phone or tablet'},
+ {id:'basic',name:'Basic',price:199,quality:'720p',devices:2,simultaneous:1,download:1,note:'Phone, tablet, laptop and TV'},
+ {id:'standard',name:'Standard',price:499,quality:'1080p',devices:2,simultaneous:2,download:2,note:'Phone, tablet, laptop and TV'},
+ {id:'premium',name:'Premium',price:649,quality:'4K + HDR',devices:6,simultaneous:4,download:6,note:'Spatial audio supported'}
+];
+const uid=()=>Math.random().toString(36).slice(2)+Date.now().toString(36);
+const money=n=>`₹${Number(n||0).toLocaleString('en-IN')}`;
+function App(){
+ const [admin,setAdmin]=useState(()=>sessionStorage.getItem('ns_admin')==='1');
+ const [tab,setTab]=useState('home'); const [friends,setFriends]=useState({}); const [plans,setPlans]=useState({}); const [settings,setSettings]=useState({handlerName:'Main Payment Handler',upiId:''});
+ const [selected,setSelected]=useState(null); const [notice,setNotice]=useState('');
+ useEffect(()=>{const u=onValue(ref(db,'friends'),s=>setFriends(s.val()||{}));const p=onValue(ref(db,'plans'),s=>setPlans(s.val()||{}));const c=onValue(ref(db,'settings'),s=>setSettings(v=>({...v,...(s.val()||{})})));return()=>{u();p();c()}},[]);
+ const planList=useMemo(()=>Object.values(plans).length?Object.values(plans):DEFAULT_PLANS,[plans]);
+ const friendList=Object.entries(friends).map(([id,v])=>({id,...v}));
+ const paid=friendList.filter(f=>f.status==='paid').length, pending=friendList.filter(f=>f.status!=='paid').length;
+ function login(e){e.preventDefault();const f=new FormData(e.currentTarget);if(f.get('u')===ADMIN_USER&&f.get('p')===ADMIN_PASS){sessionStorage.setItem('ns_admin','1');setAdmin(true);setNotice('Admin access enabled.')}else setNotice('Invalid admin credentials.')} 
+ function logout(){sessionStorage.removeItem('ns_admin');setAdmin(false);setTab('home')}
+ function addFriend(e){e.preventDefault();const f=new FormData(e.currentTarget);const id=push(ref(db,'friends')).key;set(ref(db,`friends/${id}`),{name:f.get('name'),phone:f.get('phone'),planId:'',amount:0,status:'unpaid',utr:'',createdAt:Date.now()});e.currentTarget.reset();setNotice('Friend added.');}
+ function assignPlan(id,plan){update(ref(db,`friends/${id}`),{planId:plan.id,amount:Number(plan.price),status:'unpaid',updatedAt:Date.now()});setNotice('Plan assigned.');}
+ function markSubmitted(id){update(ref(db,`friends/${id}`),{status:'submitted',submittedAt:Date.now()});setNotice('Payment submitted for admin verification.');}
+ function markPaid(id){update(ref(db,`friends/${id}`),{status:'paid',paidAt:Date.now()});}
+ function saveSettings(e){e.preventDefault();const f=new FormData(e.currentTarget);set(ref(db,'settings'),{handlerName:f.get('handler'),upiId:f.get('upi')});setNotice('Payment settings saved.');}
+ function addPlan(e){e.preventDefault();const f=new FormData(e.currentTarget);const id=push(ref(db,'plans')).key;set(ref(db,`plans/${id}`),{name:f.get('name'),price:Number(f.get('price')),quality:f.get('quality'),devices:Number(f.get('devices')),simultaneous:Number(f.get('simultaneous')),download:Number(f.get('download')),note:f.get('note')});e.currentTarget.reset();}
+ if(!admin)return <Login notice={notice} onLogin={login}/>;
+ return <div className="app"><header><div><span className="eyebrow">SVR-2 • PRIVATE GROUP</span><h1>Netflix Splitter</h1></div><button className="ghost" onClick={logout}>Log out</button></header>
+ <nav><button className={tab==='home'?'active':''} onClick={()=>setTab('home')}>Dashboard</button><button className={tab==='friends'?'active':''} onClick={()=>setTab('friends')}>Friends</button><button className={tab==='plans'?'active':''} onClick={()=>setTab('plans')}>Plans</button><button className={tab==='settings'?'active':''} onClick={()=>setTab('settings')}>Payment</button></nav>
+ {notice&&<div className="notice">{notice}<button onClick={()=>setNotice('')}>×</button></div>}
+ {tab==='home'&&<Dashboard friends={friendList} paid={paid} pending={pending} planList={planList} onSelect={setSelected}/>} 
+ {tab==='friends'&&<Friends friends={friendList} plans={planList} onAdd={addFriend} onAssign={assignPlan} onSelect={setSelected} onDelete={id=>remove(ref(db,`friends/${id}`))}/>} 
+ {tab==='plans'&&<Plans plans={planList} onAdd={addPlan}/>} 
+ {tab==='settings'&&<Settings settings={settings} onSave={saveSettings}/>} 
+ {selected&&<PaymentModal friend={selected} plan={planList.find(p=>p.id===selected.planId)||planList.find(p=>p.name===selected.planName)} settings={settings} onClose={()=>setSelected(null)} onSubmit={markSubmitted}/>} 
+ </div>
+}
+function Login({onLogin,notice}){return <main className="login"><div className="loginbox"><div className="brand">N</div><span className="eyebrow">PRIVATE SUBSCRIPTION MANAGER</span><h1>Netflix Splitter</h1><p>Admin control for your private friend group.</p><form onSubmit={onLogin}><input name="u" placeholder="Username" autoComplete="username"/><input name="p" type="password" placeholder="Password" autoComplete="current-password"/><button>Sign in</button></form>{notice&&<div className="error">{notice}</div>}</div></main>}
+function Dashboard({friends,paid,pending,planList,onSelect}){const total=friends.reduce((s,f)=>s+Number(f.amount||0),0);return <section><div className="hero"><div><span className="eyebrow">LIVE GROUP STATUS</span><h2>Everyone, one place.</h2><p>Payment changes sync instantly through Firebase.</p></div><div className="live"><i/> LIVE</div></div><div className="stats"><Stat n={friends.length} l="Friends"/><Stat n={paid} l="Paid"/><Stat n={pending} l="Pending"/><Stat n={money(total)} l="Monthly total"/></div><div className="sectionhead"><h3>Payment board</h3><span>{paid}/{friends.length} confirmed</span></div><div className="grid">{friends.map(f=><FriendCard key={f.id} f={f} plan={planList.find(p=>p.id===f.planId)} onClick={()=>onSelect(f)}/>)}</div>{!friends.length&&<Empty text="No friends added yet. Add the group members from Friends."/>}</section>}
+const Stat=({n,l})=><div className="stat"><strong>{n}</strong><span>{l}</span></div>;
+function FriendCard({f,plan,onClick}){return <button className="card friend" onClick={onClick}><div className="avatar">{f.name?.slice(0,1).toUpperCase()}</div><div className="friendinfo"><strong>{f.name}</strong><span>{f.phone}</span><span>{plan?.name||'No plan assigned'}</span></div><div className={`status ${f.status}`}>{f.status==='paid'?'PAID':f.status==='submitted'?'VERIFY':'UNPAID'}</div><b>{f.amount?money(f.amount):'—'}</b></button>}
+function Friends({friends,plans,onAdd,onAssign,onSelect,onDelete}){return <section><div className="sectionhead"><div><span className="eyebrow">GROUP MEMBERS</span><h2>Friends</h2></div></div><div className="twocol"><form className="panel" onSubmit={onAdd}><h3>Add friend</h3><p>Only name and mobile are required.</p><input name="name" required placeholder="Friend name"/><input name="phone" required inputMode="numeric" placeholder="Mobile number"/><button>Add friend</button></form><div className="panel"><h3>Members</h3>{friends.map(f=><div className="row" key={f.id}><div><b>{f.name}</b><small>{f.phone}</small></div><select value={f.planId||''} onChange={e=>{const p=plans.find(x=>x.id===e.target.value);if(p)onAssign(f.id,p)}}><option value="">Select plan</option>{plans.map(p=><option key={p.id} value={p.id}>{p.name} · {money(p.price)}</option>)}</select><button className="mini" onClick={()=>onSelect(f)}>QR</button><button className="danger" onClick={()=>onDelete(f.id)}>×</button></div>)}{!friends.length&&<Empty text="No friends yet."/>}</div></div></section>}
+function Plans({plans,onAdd}){return <section><div className="sectionhead"><div><span className="eyebrow">CATALOG</span><h2>Netflix plans</h2></div></div><div className="planGrid">{plans.map(p=><div className="plan" key={p.id}><span className="eyebrow">{p.quality}</span><h3>{p.name}</h3><strong>{money(p.price)}<small>/month</small></strong><div className="facts"><span>{p.devices} devices</span><span>{p.simultaneous} at once</span><span>{p.download} downloads</span></div><p>{p.note}</p></div>)}</div><form className="panel addplan" onSubmit={onAdd}><h3>Add custom plan</h3><div className="formgrid"><input name="name" required placeholder="Name"/><input name="price" type="number" required placeholder="Price"/><input name="quality" placeholder="Quality"/><input name="devices" type="number" placeholder="Devices"/><input name="simultaneous" type="number" placeholder="Simultaneous"/><input name="download" type="number" placeholder="Downloads"/><input name="note" className="wide" placeholder="Important note"/></div><button>Add plan</button></form></section>}
+function Settings({settings,onSave}){return <section><div className="sectionhead"><div><span className="eyebrow">UPI COLLECTION</span><h2>Payment handler</h2></div></div><form className="panel settings" onSubmit={onSave}><h3>Where everyone pays</h3><p>The UPI ID below is encoded into every payment QR.</p><label>Handler name<input name="handler" defaultValue={settings.handlerName}/></label><label>UPI ID<input name="upi" required defaultValue={settings.upiId} placeholder="example@upi"/></label><button>Save payment settings</button><div className="warning">Direct UPI QR payments cannot be independently verified by a website. Use the payment-submitted + admin-verification flow for trustworthy status.</div></form></section>}
+function PaymentModal({friend,plan,settings,onClose,onSubmit}){const upi=settings.upiId;const amount=Number(friend.amount||plan?.price||0);const payload=upi?`upi://pay?pa=${encodeURIComponent(upi)}&pn=${encodeURIComponent(settings.handlerName||'Netflix Splitter')}&am=${amount}&cu=INR&tn=${encodeURIComponent(`Netflix ${plan?.name||''} - ${friend.name}`)}`:'';return <div className="modal"><div className="modalbox"><button className="close" onClick={onClose}>×</button><span className="eyebrow">PAYMENT REQUEST</span><h2>{friend.name}</h2><p>{plan?.name||'Plan not assigned'} · {money(amount)}</p>{payload?<QRCodeSVG value={payload} size={230} bgColor="#fff" fgColor="#000" level="M"/>:<div className="qrplaceholder">Admin must set a UPI ID.</div>}<div className="payactions">{payload&&<a href={payload}>Open UPI app</a>}<button onClick={()=>{onSubmit(friend.id);onClose()}}>I have paid</button></div><small>Pay to <b>{settings.handlerName||'Main Payment Handler'}</b> · {upi||'UPI ID not configured'}</small></div></div>}
+const Empty=({text})=><div className="empty">{text}</div>;
+createRoot(document.getElementById('root')).render(<App/>);
